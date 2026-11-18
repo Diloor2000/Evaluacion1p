@@ -1,0 +1,58 @@
+services:
+  agenda:
+    build: ./agenda
+    ports:
+      - "3001:3001"
+    environment:
+      RETARDO_MS: "0"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - "-e"
+        - "fetch('http://localhost:3001/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  notificaciones:
+    build: ./notificaciones
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - "-e"
+        - "const n=require('node:net').connect(4000,'127.0.0.1',()=>{n.end();process.exit(0)});n.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  citas:
+    build: ./citas
+    ports:
+      - "3000:3000"
+    environment:
+      AGENDA_URL: "http://agenda:3001"
+      AGENDA_TIMEOUT_MS: "2000"
+      NOTIFICACIONES_HOST: "notificaciones"
+      NOTIFICACIONES_PORT: "4000"
+      NOTIFICACIONES_TIMEOUT_MS: "1000"
+    depends_on:
+      agenda:
+        condition: service_healthy
+      notificaciones:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - "-e"
+        - "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
