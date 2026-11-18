@@ -34,6 +34,10 @@ function enviarNotificacion(cita: Cita): Promise<{ ok: boolean; motivo?: string 
   return new Promise((resolve) => {
     let terminado = false;
     let pendiente = "";
+    const timer = setTimeout(() => finalizar({
+      ok: false,
+      motivo: `Tiempo de espera agotado (${notificacionesTimeout} ms)`
+    }), notificacionesTimeout);
     const socket = net.createConnection(
       { host: notificacionesHost, port: notificacionesPort },
       () => {
@@ -54,6 +58,7 @@ function enviarNotificacion(cita: Cita): Promise<{ ok: boolean; motivo?: string 
     const finalizar = (resultado: { ok: boolean; motivo?: string }) => {
       if (terminado) return;
       terminado = true;
+      clearTimeout(timer);
       socket.destroy();
       resolve(resultado);
     };
@@ -64,23 +69,24 @@ function enviarNotificacion(cita: Cita): Promise<{ ok: boolean; motivo?: string 
       if (fin === -1) return;
 
       try {
-        const respuesta = JSON.parse(pendiente.slice(0, fin)) as { ok?: boolean };
-        finalizar(respuesta.ok
+        const respuesta = JSON.parse(pendiente.slice(0, fin)) as { ok?: boolean; recibido?: string };
+        finalizar(respuesta.ok && respuesta.recibido === cita.id
           ? { ok: true }
-          : { ok: false, motivo: "Notificaciones rechazó el aviso" });
+          : { ok: false, motivo: "Confirmación inválida de Notificaciones" });
       } catch {
         finalizar({ ok: false, motivo: "Respuesta TCP inválida" });
       }
     });
 
-    socket.on("timeout", () => finalizar({
-      ok: false,
-      motivo: `Tiempo de espera agotado (${notificacionesTimeout} ms)`
-    }));
     socket.on("error", (error: NodeJS.ErrnoException) => finalizar({
       ok: false,
       motivo: `No se pudo conectar con Notificaciones: ${error.code ?? error.message}`
     }));
+    socket.on("close", () => {
+      if (!terminado) {
+        finalizar({ ok: false, motivo: "Notificaciones cerró la conexión sin confirmar" });
+      }
+    });
   });
 }
 
@@ -172,9 +178,11 @@ app.get("/reporte", (req, res) => {
   const inicio = performance.now();
   const workerUrl = fileURLToPath(new URL("./worker.js", import.meta.url));
   const worker = new Worker(workerUrl, { workerData: { n } });
+  let respondido = false;
 
   worker.once("message", (resultado: { primos?: number; error?: string }) => {
-    worker.terminate();
+    respondido = true;
+    void worker.terminate();
     if (resultado.error) {
       return res.status(500).json({ error: "Error en el hilo trabajador", detalle: resultado.error });
     }
@@ -188,13 +196,18 @@ app.get("/reporte", (req, res) => {
   });
 
   worker.once("error", (error) => {
+    if (respondido) return;
+    respondido = true;
     console.log(`Error en worker: ${error.message}`);
     res.status(500).json({ error: "Error en el hilo trabajador", detalle: error.message });
   });
 
   worker.once("exit", (code) => {
-    if (code !== 0) {
-      console.log(`Worker terminó con código ${code}`);
+    if (!respondido) {
+      respondido = true;
+      const detalle = `El hilo terminó sin resultado (código ${code})`;
+      console.log(detalle);
+      res.status(500).json({ error: "Error en el hilo trabajador", detalle });
     }
   });
 });
